@@ -1,0 +1,9 @@
+[submodule "extern/benchmark"]
+	path = extern/benchmark
+	url = git@github.com:google/benchmark.git
+[submodule "extern/gfatools"]
+	path = extern/gfatools
+	url = git@github.com:lh3/gfatools.git
+[submodule "extern/klib"]
+	path = extern/klib
+	url = git@github.com:attractivechaos/klib.git

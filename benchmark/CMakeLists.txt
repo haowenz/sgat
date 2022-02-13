@@ -1,0 +1,5 @@
+add_executable(SequenceGraphBenchmark sequence_graph_benchmark.cc)
+set_target_properties(SequenceGraphBenchmark PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/tests/data")
+get_target_property(benchmark_working_dir SequenceGraphBenchmark WORKING_DIRECTORY)
+message(STATUS "Benchmark working directory: " ${benchmark_working_dir})
+target_link_libraries(SequenceGraphBenchmark sgat benchmark::benchmark)
