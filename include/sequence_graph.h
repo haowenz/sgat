@@ -26,13 +26,13 @@ class SequenceGraph {
   SequenceGraph() = default;
   ~SequenceGraph() = default;
 
-  GraphSizeType GetNumVerticesInCompactedGraph() {
+  inline GraphSizeType GetNumVerticesInCompactedGraph() const {
     return compacted_graph_labels_.size();
   }
 
-  GraphSizeType GetNumEdgesInCompactedGraph() {
+  inline GraphSizeType GetNumEdgesInCompactedGraph() const {
     GraphSizeType num_edges = 0;
-    for (std::vector<GraphSizeType> &neighbors :
+    for (const std::vector<GraphSizeType> &neighbors :
          compacted_graph_adjacency_list_) {
       num_edges += neighbors.size();
     }
@@ -41,9 +41,9 @@ class SequenceGraph {
 
   inline const GraphSizeType GetNumVertices() const { return labels_.size(); }
 
-  GraphSizeType GetNumEdges() {
+  GraphSizeType GetNumEdges() const {
     GraphSizeType num_edges = 0;
-    for (std::vector<GraphSizeType> &neighbors : adjacency_list_) {
+    for (const std::vector<GraphSizeType> &neighbors : adjacency_list_) {
       num_edges += neighbors.size();
     }
     return num_edges;
@@ -208,7 +208,7 @@ class SequenceGraph {
               << GetNumEdgesInCompactedGraph() << std::endl;
   }
 
-  void OutputCompactedGraphInGFA(std::string &output_file_path) {
+  void OutputCompactedGraphInGFA(std::string &output_file_path) const {
     std::ofstream outstrm(output_file_path);
     outstrm << "H\tVN:Z:1.0\n";
     // Both for loops start from 1 to skip the dummy vertex.
@@ -223,7 +223,7 @@ class SequenceGraph {
     }
   }
 
-  void OutputCharLabeledGraphInGFA(std::string &output_file_path) {
+  void OutputCharLabeledGraphInGFA(std::string &output_file_path) const {
     std::ofstream outstrm(output_file_path);
     outstrm << "H\tVN:Z:1.0\n";
     // Both for loops start from 1 to skip the dummy vertex.
