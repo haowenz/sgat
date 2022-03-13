@@ -12,3 +12,6 @@ target_link_libraries(dijkstra_extend PRIVATE sgat)
 
 add_executable(navarro_extend navarro_extend.cc)
 target_link_libraries(navarro_extend PRIVATE sgat)
+
+add_executable(navarro_semi navarro_semi.cc)
+target_link_libraries(navarro_semi PRIVATE sgat)
