@@ -30,6 +30,16 @@ class SequenceGraph {
     return compacted_graph_labels_.size();
   }
 
+  inline GraphSizeType GetVertexLengthInCompactedGraph(
+      GraphSizeType vertex_id) const {
+    return compacted_graph_labels_[vertex_id].length();
+  }
+
+  inline char GetVertexLabelInCompactedGraph(GraphSizeType vertex_id,
+                                             GraphSizeType j) const {
+    return compacted_graph_labels_[vertex_id][j];
+  }
+
   inline GraphSizeType GetNumEdgesInCompactedGraph() const {
     GraphSizeType num_edges = 0;
     for (const std::vector<GraphSizeType> &neighbors :
@@ -299,6 +309,11 @@ class SequenceGraph {
     //}
   }
 
+  inline char GetComplementaryVertexLabelInCompactedGraph(
+      GraphSizeType vertex_id, GraphSizeType vertex_j) const {
+    return base_complement_[(int)compacted_graph_labels_[vertex_id][vertex_j]];
+  }
+
   inline char GetReverseComplementaryVertexLabel(GraphSizeType vertex) const {
     return base_complement_[(int)labels_[vertex]];
   }
@@ -310,6 +325,11 @@ class SequenceGraph {
   inline const std::vector<GraphSizeType> &GetNeighbors(
       GraphSizeType vertex) const {
     return adjacency_list_[vertex];
+  }
+
+  inline const std::vector<GraphSizeType> &GetNeighborsInCompatedGraph(
+      GraphSizeType vertex) const {
+    return compacted_graph_adjacency_list_[vertex];
   }
 
   void GenerateReverseComplementaryCharLabeledGraph() {
