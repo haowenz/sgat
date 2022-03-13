@@ -5,7 +5,7 @@
 
 namespace sgat {
 
-template <class ScoreType = int16_t>
+template <class ScoreType>
 struct ScoringSchema {
   ScoreType substitution_penalty = 1;
   ScoreType deletion_penalty = 1;
