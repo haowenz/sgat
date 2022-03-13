@@ -16,7 +16,7 @@
 #include "sequence_batch.h"
 #include "utils.h"
 
-#define SGAT_VERSION "0.1.0-r3"
+#define SGAT_VERSION "0.2.0-r12"
 
 namespace sgat {
 
