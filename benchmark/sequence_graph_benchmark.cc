@@ -36,8 +36,8 @@ static void DoTeardown(const benchmark::State& state) {
 
 static void BM_AlignUsingLinearGapPenalty(benchmark::State& state) {
   const uint32_t num_sequences = sequence_batch.GetNumLoadedSequences();
-  const sgat::ScoringSchema<> scoring_schema;
-  sgat::SgaAligner<> sga_aligner;
+  const sgat::ScoringSchema<int32_t> scoring_schema;
+  sgat::SgaAligner<int32_t, int32_t, int32_t> sga_aligner;
 
   for (auto _ : state) {
     for (uint32_t si = 0; si < num_sequences; ++si) {
@@ -50,13 +50,14 @@ static void BM_AlignUsingLinearGapPenalty(benchmark::State& state) {
 static void BM_AlignUsingLinearGapPenaltyWithNavarroAlgorithm(
     benchmark::State& state) {
   const uint32_t num_sequences = sequence_batch.GetNumLoadedSequences();
-  const sgat::ScoringSchema<> scoring_schema;
-  sgat::NavarroAligner<> navarro_aligner;
+  const sgat::ScoringSchema<int32_t> scoring_schema;
+  sgat::NavarroAligner<int32_t, int32_t, int32_t> navarro_aligner;
 
   for (auto _ : state) {
     for (uint32_t si = 0; si < num_sequences; ++si) {
-      navarro_aligner.AlignUsingLinearGapPenaltyWithNavarroAlgorithm(
-          si, sequence_batch, sequence_graph, scoring_schema);
+      navarro_aligner
+          .AlignUsingLinearGapPenaltyWithNavarroAlgorithmSemiGloballyOnTwoDirections(
+              si, sequence_batch, sequence_graph, scoring_schema);
     }
   }
 }
@@ -64,8 +65,8 @@ static void BM_AlignUsingLinearGapPenaltyWithNavarroAlgorithm(
 static void BM_AlignUsingLinearGapPenaltyWithDijkstraAlgorithm(
     benchmark::State& state) {
   const uint32_t num_sequences = sequence_batch.GetNumLoadedSequences();
-  const sgat::ScoringSchema<> scoring_schema;
-  sgat::DijkstraAligner<> dijkstra_aligner;
+  const sgat::ScoringSchema<int32_t> scoring_schema;
+  sgat::DijkstraAligner<int32_t, int32_t, int32_t> dijkstra_aligner;
 
   for (auto _ : state) {
     for (uint32_t si = 0; si < num_sequences; ++si) {
