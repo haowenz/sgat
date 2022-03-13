@@ -88,10 +88,10 @@ TEST_F(SequenceGraphTest, AlignUsingLinearGapPenaltyTest) {
   const uint32_t num_loaded_sequences = sequence_batch_.LoadBatch();
   const int32_t max_alignment_scores[5] = {62, 25, 54, 9, 37};
 
-  const sgat::ScoringSchema<int16_t> scoring_schema;
+  const sgat::ScoringSchema<int32_t> scoring_schema;
 
-  sgat::SgaAligner</*GraphSizeType=*/int32_t, /*QueryLengthType=*/int16_t,
-                   /*ScoreType=*/int16_t>
+  sgat::SgaAligner</*GraphSizeType=*/int32_t, /*QueryLengthType=*/int32_t,
+                   /*ScoreType=*/int32_t>
       sga_aligner;
 
   for (uint32_t i = 0; i < num_loaded_sequences; ++i) {
@@ -106,16 +106,17 @@ TEST_F(SequenceGraphTest, AlignUsingLinearGapPenaltyTest) {
 TEST_F(SequenceGraphTest, AlignUsingLinearGapPenaltyWithNavarroAlgorithmTest) {
   const uint32_t num_loaded_sequences = sequence_batch_.LoadBatch();
   const int32_t max_alignment_scores[5] = {62, 25, 54, 9, 37};
-  const sgat::ScoringSchema<int16_t> scoring_schema;
+  const sgat::ScoringSchema<int32_t> scoring_schema;
 
-  sgat::NavarroAligner</*GraphSizeType=*/int32_t, /*QueryLengthType=*/int16_t,
-                       /*ScoreType=*/int16_t>
+  sgat::NavarroAligner</*GraphSizeType=*/int32_t, /*QueryLengthType=*/int32_t,
+                       /*ScoreType=*/int32_t>
       navarro_aligner;
 
   for (uint32_t i = 0; i < num_loaded_sequences; ++i) {
     const int32_t alignment_score =
-        navarro_aligner.AlignUsingLinearGapPenaltyWithNavarroAlgorithm(
-            i, sequence_batch_, txt_sequence_graph_, scoring_schema);
+        navarro_aligner
+            .AlignUsingLinearGapPenaltyWithNavarroAlgorithmSemiGloballyOnTwoDirections(
+                i, sequence_batch_, txt_sequence_graph_, scoring_schema);
     EXPECT_EQ(alignment_score, max_alignment_scores[i])
         << "Alignment score for sequence" << i << " is wrong! It should be "
         << max_alignment_scores[i] << " but it is " << alignment_score;
@@ -126,16 +127,17 @@ TEST_F(SequenceGraphTest,
        AlignUsingLinearGapPenaltyWithNavarroAlgorithmOnGfaGraphTest) {
   const uint32_t num_loaded_sequences = sequence_batch_.LoadBatch();
   const int32_t max_alignment_scores[5] = {62, 25, 54, 9, 37};
-  const sgat::ScoringSchema<int16_t> scoring_schema;
+  const sgat::ScoringSchema<int32_t> scoring_schema;
 
-  sgat::NavarroAligner</*GraphSizeType=*/int32_t, /*QueryLengthType=*/int16_t,
-                       /*ScoreType=*/int16_t>
+  sgat::NavarroAligner</*GraphSizeType=*/int32_t, /*QueryLengthType=*/int32_t,
+                       /*ScoreType=*/int32_t>
       navarro_aligner;
 
   for (uint32_t i = 0; i < num_loaded_sequences; ++i) {
     const int32_t alignment_score =
-        navarro_aligner.AlignUsingLinearGapPenaltyWithNavarroAlgorithm(
-            i, sequence_batch_, gfa_sequence_graph_, scoring_schema);
+        navarro_aligner
+            .AlignUsingLinearGapPenaltyWithNavarroAlgorithmSemiGloballyOnTwoDirections(
+                i, sequence_batch_, gfa_sequence_graph_, scoring_schema);
     EXPECT_EQ(alignment_score, max_alignment_scores[i])
         << "Alignment score for sequence" << i << " is wrong! It should be "
         << max_alignment_scores[i] << " but it is " << alignment_score;
@@ -146,10 +148,10 @@ TEST_F(SequenceGraphTest, AlignUsingLinearGapPenaltyWithDijkstraAlgorithmTest) {
   const uint32_t num_loaded_sequences = sequence_batch_.LoadBatch();
   const int32_t max_alignment_scores[5] = {62, 25, 54, 9, 37};
 
-  const sgat::ScoringSchema<int16_t> scoring_schema;
+  const sgat::ScoringSchema<int32_t> scoring_schema;
 
-  sgat::DijkstraAligner</*GraphSizeType=*/int32_t, /*QueryLengthType=*/int16_t,
-                        /*ScoreType=*/int16_t>
+  sgat::DijkstraAligner</*GraphSizeType=*/int32_t, /*QueryLengthType=*/int32_t,
+                        /*ScoreType=*/int32_t>
       dijkstra_aligner;
 
   for (uint32_t i = 0; i < num_loaded_sequences; ++i) {
