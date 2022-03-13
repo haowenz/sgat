@@ -5,29 +5,62 @@
 #include "sequence_batch.h"
 #include "sequence_graph.h"
 #include "utils.h"
-//#include "khash.h"
 
 namespace sgat {
 
-template <class GraphSizeType = int32_t, class QueryLengthType = int16_t,
-          class ScoreType = int16_t>
+template <class GraphSizeType, class QueryLengthType, class ScoreType>
 struct VertexWithDistanceForDijkstra {
   GraphSizeType graph_vertex_id;
+  GraphSizeType graph_vertex_j;
   QueryLengthType query_index;
   ScoreType distance;
   bool is_reverse_complementary;
 };
 
-template <class GraphSizeType = int32_t>
+template <class GraphSizeType, class QueryLengthType, class ScoreType>
+bool CompareVertexWithDistanceForDijkstra(
+    const VertexWithDistanceForDijkstra<GraphSizeType, QueryLengthType,
+                                        ScoreType> &v1,
+    const VertexWithDistanceForDijkstra<GraphSizeType, QueryLengthType,
+                                        ScoreType> &v2) {
+  if (v1.distance > v2.distance) {
+    return true;
+  }
+
+  if (v1.distance == v2.distance) {
+    if (v1.query_index < v2.query_index) {
+      return true;
+    }
+    if (v1.query_index == v2.query_index) {
+      if (v1.graph_vertex_id > v2.graph_vertex_id) {
+        return true;
+      }
+      if (v1.graph_vertex_id == v2.graph_vertex_id) {
+        if (v1.graph_vertex_j > v2.graph_vertex_j) {
+          return true;
+        }
+        if (v1.graph_vertex_j == v2.graph_vertex_j) {
+          if (!v1.is_reverse_complementary && v2.is_reverse_complementary) {
+            return true;
+          }
+          return false;
+        }
+        return false;
+      }
+      return false;
+    }
+    return false;
+  }
+  return false;
+}
+
+template <class GraphSizeType>
 struct DijkstraAlgorithmStatistics {
   GraphSizeType forward_num_cells = 0;
   GraphSizeType rc_num_cells = 0;
 };
 
-// KHASH_MAP_INIT_INT(k32, uint32_t);
-
-template <class GraphSizeType = int32_t, class QueryLengthType = int16_t,
-          class ScoreType = int16_t>
+template <class GraphSizeType, class QueryLengthType, class ScoreType>
 class DijkstraAligner {
  public:
   DijkstraAligner() = default;
@@ -43,7 +76,8 @@ class DijkstraAligner {
     const ScoreType min_alignment_cost =
         AlignUsingLinearGapPenaltyWithDijkstraAlgorithm(
             sequence_index, sequence_batch, sequence_graph,
-            sequence_graph.GetNumVertices(), scoring_schema, stats);
+            sequence_graph.GetNumVerticesInCompactedGraph(), scoring_schema,
+            stats);
 
     std::cerr << "Sequence length: " << sequence_length
               << ", alignment cost:" << min_alignment_cost
@@ -74,138 +108,184 @@ class DijkstraAligner {
   }
 
  private:
+  // Return true if it got updated.
+  bool UpdateVertexDistanceIfNecessary(
+      GraphSizeType vertex_id, GraphSizeType vertex_j,
+      QueryLengthType query_index, ScoreType distance,
+      std::vector<std::vector<std::unordered_map<QueryLengthType, ScoreType>>>
+          &vertex_distances) {
+    const bool is_entry_found =
+        vertex_distances[vertex_id][vertex_j].find(query_index) !=
+        vertex_distances[vertex_id][vertex_j].end();
+
+    bool is_updated = false;
+    if ((is_entry_found &&
+         distance < vertex_distances[vertex_id][vertex_j][query_index]) ||
+        !is_entry_found) {
+      vertex_distances[vertex_id][vertex_j][query_index] = distance;
+      is_updated = true;
+    }
+
+    return is_updated;
+  }
+
+  // Return true if it got updated.
+  bool PushDijkstraQueueAndUpdateDistanceIfNecessary(
+      GraphSizeType vertex_id, GraphSizeType vertex_j,
+      QueryLengthType query_index, ScoreType vertex_distance,
+      bool is_reverse_complementary,
+      std::vector<std::vector<std::unordered_map<QueryLengthType, ScoreType>>>
+          &vertex_distances,
+      std::priority_queue<VertexWithDistanceForDijkstra<
+                              GraphSizeType, QueryLengthType, ScoreType>,
+                          std::vector<VertexWithDistanceForDijkstra<
+                              GraphSizeType, QueryLengthType, ScoreType>>,
+                          decltype(&CompareVertexWithDistanceForDijkstra<
+                                   GraphSizeType, QueryLengthType, ScoreType>)>
+          &Q,
+      DijkstraAlgorithmStatistics<GraphSizeType> &stats) {
+    const bool is_updated = UpdateVertexDistanceIfNecessary(
+        vertex_id, vertex_j, query_index, vertex_distance, vertex_distances);
+    if (is_updated) {
+      Q.push({/*graph_vertex_id=*/vertex_id,
+              /*graph_vertex_j=*/vertex_j,
+              /*query_index=*/query_index,
+              /*distance=*/vertex_distance,
+              /*is_reverse_complementary=*/
+              is_reverse_complementary});
+
+      if (is_reverse_complementary) {
+        ++(stats.rc_num_cells);
+      } else {
+        ++(stats.forward_num_cells);
+      }
+    }
+
+    return is_updated;
+  }
+
+  void ProcessNeighbors(
+      GraphSizeType neighbor,
+      const VertexWithDistanceForDijkstra<GraphSizeType, QueryLengthType,
+                                          ScoreType> &current_vertex,
+      uint32_t sequence_index, const SequenceBatch &sequence_batch,
+      GraphSizeType start_vertex,
+      const SequenceGraph<GraphSizeType> &sequence_graph,
+      const ScoringSchema<ScoreType> &scoring_schema,
+      std::vector<std::vector<std::unordered_map<QueryLengthType, ScoreType>>>
+          &vertex_distances,
+      std::priority_queue<VertexWithDistanceForDijkstra<
+                              GraphSizeType, QueryLengthType, ScoreType>,
+                          std::vector<VertexWithDistanceForDijkstra<
+                              GraphSizeType, QueryLengthType, ScoreType>>,
+                          decltype(&CompareVertexWithDistanceForDijkstra<
+                                   GraphSizeType, QueryLengthType, ScoreType>)>
+          &Q,
+      DijkstraAlgorithmStatistics<GraphSizeType> &stats) {
+    const GraphSizeType num_vertices =
+        sequence_graph.GetNumVerticesInCompactedGraph();
+
+    const QueryLengthType sequence_length =
+        sequence_batch.GetSequenceLengthAt(sequence_index);
+    const std::string &sequence_bases =
+        sequence_batch.GetSequenceAt(sequence_index);
+
+    // This is the last char in the vertex, we have to add its neighbors to
+    // the queue.
+    // Add neighbors in the same layaer.
+    const ScoreType new_deletion_distance =
+        current_vertex.distance + scoring_schema.deletion_penalty;
+
+    PushDijkstraQueueAndUpdateDistanceIfNecessary(
+        neighbor, /*vertex_j=*/0, current_vertex.query_index,
+        new_deletion_distance, current_vertex.is_reverse_complementary,
+        vertex_distances, Q, stats);
+
+    // Add neighbors in the next layaer.
+    const char vertex_0_label =
+        current_vertex.is_reverse_complementary
+            ? sequence_graph.GetComplementaryVertexLabelInCompactedGraph(
+                  neighbor, 0)
+            : sequence_graph.GetVertexLabelInCompactedGraph(neighbor, 0);
+    const char sequence_base =
+        current_vertex.is_reverse_complementary
+            ? sequence_bases[sequence_length - 1 -
+                             (current_vertex.query_index + 1)]
+            : sequence_bases[(current_vertex.query_index + 1)];
+
+    const bool is_mismatch = (vertex_0_label != sequence_base);
+
+    const ScoreType new_substitution_distance =
+        current_vertex.distance +
+        (is_mismatch ? scoring_schema.substitution_penalty : 0);
+
+    PushDijkstraQueueAndUpdateDistanceIfNecessary(
+        neighbor, 0, current_vertex.query_index + 1, new_substitution_distance,
+        current_vertex.is_reverse_complementary, vertex_distances, Q, stats);
+  }
+
   ScoreType AlignUsingLinearGapPenaltyWithDijkstraAlgorithm(
       uint32_t sequence_index, const SequenceBatch &sequence_batch,
       const SequenceGraph<GraphSizeType> &sequence_graph,
       GraphSizeType start_vertex,
       const ScoringSchema<ScoreType> &scoring_schema,
       DijkstraAlgorithmStatistics<GraphSizeType> &stats) {
-    const GraphSizeType num_vertices = sequence_graph.GetNumVertices();
+    const GraphSizeType num_vertices =
+        sequence_graph.GetNumVerticesInCompactedGraph();
     const QueryLengthType sequence_length =
         sequence_batch.GetSequenceLengthAt(sequence_index);
     const std::string &sequence_bases =
         sequence_batch.GetSequenceAt(sequence_index);
 
-    std::vector<std::unordered_map<QueryLengthType, ScoreType>>
-        forward_vertex_distances(num_vertices);
-    std::vector<std::unordered_map<QueryLengthType, ScoreType>>
-        complementary_vertex_distances(num_vertices);
+    std::vector<std::vector<std::unordered_map<QueryLengthType, ScoreType>>>
+        forward_vertex_distances;
+    std::vector<std::vector<std::unordered_map<QueryLengthType, ScoreType>>>
+        complementary_vertex_distances;
 
-    // std::vector<khash_t(k32) *> forward_vertex_distances(num_vertices,
-    // nullptr); std::vector<khash_t(k32) *>
-    // complementary_vertex_distances(num_vertices,
-    //                                                           nullptr);
-    // for (GraphSizeType vi = 0; vi < num_vertices; ++vi) {
-    //  forward_vertex_distances[vi] = kh_init(k32);
-    //  complementary_vertex_distances[vi] = kh_init(k32);
-    //}
-
-    // std::vector<std::unordered_map<
-    //    QueryLengthType, VertexWithDistanceForDijkstra<
-    //                         GraphSizeType, QueryLengthType, ScoreType>>>
-    //    vertex_parent(num_vertices);
-
-    auto compare_function =
-        [](const VertexWithDistanceForDijkstra<GraphSizeType, QueryLengthType,
-                                               ScoreType> &v1,
-           const VertexWithDistanceForDijkstra<GraphSizeType, QueryLengthType,
-                                               ScoreType> &v2) {
-          if (v1.distance > v2.distance) {
-            return true;
-          }
-
-          if (v1.distance == v2.distance) {
-            if (v1.query_index < v2.query_index) {
-              return true;
-            }
-            if (v1.query_index == v2.query_index) {
-              if (v1.graph_vertex_id > v2.graph_vertex_id) {
-                return true;
-              }
-              if (v1.graph_vertex_id == v2.graph_vertex_id) {
-                if (!v1.is_reverse_complementary &&
-                    v2.is_reverse_complementary) {
-                  return true;
-                }
-                return false;
-              }
-              return false;
-            }
-            return false;
-          }
-          return false;
-        };
+    for (GraphSizeType vertex_id = 0; vertex_id < num_vertices; ++vertex_id) {
+      GraphSizeType vertex_length =
+          sequence_graph.GetVertexLengthInCompactedGraph(vertex_id);
+      forward_vertex_distances.emplace_back(
+          std::vector<std::unordered_map<QueryLengthType, ScoreType>>(
+              vertex_length));
+      complementary_vertex_distances.emplace_back(
+          std::vector<std::unordered_map<QueryLengthType, ScoreType>>(
+              vertex_length));
+    }
 
     std::priority_queue<VertexWithDistanceForDijkstra<
                             GraphSizeType, QueryLengthType, ScoreType>,
                         std::vector<VertexWithDistanceForDijkstra<
                             GraphSizeType, QueryLengthType, ScoreType>>,
-                        decltype(compare_function)>
-        Q(compare_function);
+                        decltype(&CompareVertexWithDistanceForDijkstra<
+                                 GraphSizeType, QueryLengthType, ScoreType>)>
+        Q(CompareVertexWithDistanceForDijkstra);
 
     stats.forward_num_cells = 0;
     stats.rc_num_cells = 0;
 
-    GraphSizeType init_start_vertex =
-        start_vertex == num_vertices ? 1 : start_vertex;
-    GraphSizeType init_end_vertex =
-        start_vertex == num_vertices ? num_vertices : start_vertex + 1;
-    for (GraphSizeType vertex = init_start_vertex; vertex < init_end_vertex;
-         ++vertex) {
-      // Deal with forward strand fisrt.
-      ScoreType cost = 0;
-      const char vertex_label = sequence_graph.GetVertexLabel(vertex);
+    // Initialization.
+    PushDijkstraQueueAndUpdateDistanceIfNecessary(
+        0, 0, -1, /*distance=*/0, false, forward_vertex_distances, Q, stats);
 
-      if (sequence_bases[0] != vertex_label) {
-        cost = scoring_schema.substitution_penalty;
+    if (start_vertex == num_vertices) {
+      PushDijkstraQueueAndUpdateDistanceIfNecessary(
+          0, 0, -1, /*distance=*/0, true, complementary_vertex_distances, Q,
+          stats);
+
+      for (GraphSizeType vertex_id = 1; vertex_id < num_vertices; ++vertex_id) {
+        const GraphSizeType vertex_length =
+            sequence_graph.GetVertexLengthInCompactedGraph(vertex_id);
+        for (GraphSizeType vertex_j = 0; vertex_j < vertex_length; ++vertex_j) {
+          PushDijkstraQueueAndUpdateDistanceIfNecessary(
+              vertex_id, vertex_j, -1, /*distance=*/0, false,
+              forward_vertex_distances, Q, stats);
+
+          PushDijkstraQueueAndUpdateDistanceIfNecessary(
+              vertex_id, vertex_j, -1, /*distance=*/0, true,
+              complementary_vertex_distances, Q, stats);
+        }
       }
-      cost = std::min(cost, scoring_schema.insertion_penalty);
-
-      Q.push({/*graph_vertex_id=*/vertex, /*query_index=*/0, /*distance=*/cost,
-              /*is_reverse_complementary=*/false});
-
-      ++(stats.forward_num_cells);
-
-      // int khash_return_code = 0;
-      // khiter_t forward_vertex_distances_iterator =
-      //    kh_put(k32, forward_vertex_distances[vertex], 0,
-      //    &khash_return_code);
-      // assert(khash_return_code != -1 && khash_return_code != 0);
-      // kh_value(forward_vertex_distances[vertex],
-      //         forward_vertex_distances_iterator) = cost;
-
-      forward_vertex_distances[vertex][0] = cost;
-
-      // Now deal with reverse complementary strand.
-      cost = 0;
-      const char complementary_vertex_label =
-          sequence_graph.GetReverseComplementaryVertexLabel(vertex);
-
-      if (sequence_bases[sequence_length - 1] != complementary_vertex_label) {
-        cost = scoring_schema.substitution_penalty;
-      }
-      cost = std::min(cost, scoring_schema.insertion_penalty);
-
-      Q.push({/*graph_vertex_id=*/vertex, /*query_index=*/0, /*distance=*/cost,
-              /*is_reverse_complementary=*/true});
-
-      // khash_return_code = 0;
-      // khiter_t complementary_vertex_distances_iterator = kh_put(
-      //    k32, complementary_vertex_distances[vertex], 0, &khash_return_code);
-      // assert(khash_return_code != -1 && khash_return_code != 0);
-      // kh_value(complementary_vertex_distances[vertex],
-      //         complementary_vertex_distances_iterator) = cost;
-
-      complementary_vertex_distances[vertex][0] = cost;
-      ++(stats.rc_num_cells);
-
-      // vertex_parent[vertex][0] =
-      //    VertexWithDistanceForDijkstra<GraphSizeType, QueryLengthType,
-      //                                  ScoreType>{
-      //        /*graph_vertex_id=*/vertex, /*query_index=*/0,
-      //        /*distance=*/cost};
-      // std::cerr << "Init PUSH: " << vertex << " " << 0 << " " << cost
-      //          << std::endl;
     }
 
     ScoreType min_alignment_cost = 0;
@@ -214,325 +294,99 @@ class DijkstraAligner {
       const auto current_vertex = Q.top();
       Q.pop();
 
+#ifdef SGAT_DEBUG
+      std::cerr << "vi: " << current_vertex.graph_vertex_id
+                << ", vj: " << current_vertex.graph_vertex_j
+                << ", qi: " << current_vertex.query_index
+                << ", d: " << current_vertex.distance
+                << ", rc: " << current_vertex.is_reverse_complementary
+                << std::endl;
+#endif
+
       // Check if we reach the last layer where we can stop.
       if (current_vertex.query_index + 1 == sequence_length) {
         min_alignment_cost = current_vertex.distance;
-        // auto previous_it =
-        //    VertexWithDistanceForDijkstra<GraphSizeType, QueryLengthType,
-        //                                  ScoreType>{-1, -1, 0};
-        // auto it = current_vertex;
-        // while (!(it.graph_vertex_id == previous_it.graph_vertex_id &&
-        //         it.query_index == previous_it.query_index)) {
-        //  std::cerr << "Traceback: "
-        //            << "gi: " << it.graph_vertex_id << " qi: " <<
-        //            it.query_index
-        //            << " d: " << it.distance
-        //            << " qb: " << sequence_bases[it.query_index]
-        //            << " gb: " << labels_[it.graph_vertex_id];
-
-        //  if (it.distance + substitution_penalty_ == previous_it.distance) {
-        //    std::cerr << " op: M";
-        //  }
-
-        //  if (it.graph_vertex_id == previous_it.graph_vertex_id &&
-        //      it.distance + deletion_penalty_ == previous_it.distance) {
-        //    std::cerr << " op: D";
-        //  }
-
-        //  if (it.query_index == previous_it.query_index) {
-        //    std::cerr << " op: I";
-        //  }
-        //  std::cerr << std::endl;
-        //  previous_it = it;
-        //  it = vertex_parent[it.graph_vertex_id][it.query_index];
-        //}
-        // std::cerr << std::endl;
         break;
       }
 
-      auto &vertex_distances = current_vertex.is_reverse_complementary
+      const GraphSizeType vertex_id = current_vertex.graph_vertex_id;
+      const GraphSizeType vertex_j = current_vertex.graph_vertex_j;
+      const QueryLengthType query_index = current_vertex.query_index;
+      const ScoreType vertex_distance = current_vertex.distance;
+      const bool is_reverse_complementary =
+          current_vertex.is_reverse_complementary;
+      const GraphSizeType vertex_length =
+          sequence_graph.GetVertexLengthInCompactedGraph(vertex_id);
+
+      auto &vertex_distances = is_reverse_complementary
                                    ? complementary_vertex_distances
                                    : forward_vertex_distances;
 
-      const ScoreType min_insertion_distance =
-          (ScoreType)(scoring_schema.insertion_penalty *
-                      (current_vertex.query_index + 1));
-      if (current_vertex.distance > min_insertion_distance) {
-        Q.push(
-            {/*graph_vertex_id=*/start_vertex,
-             /*query_index=*/(QueryLengthType)(current_vertex.query_index + 1),
-             /*distance=*/min_insertion_distance,
-             /*is_reverse_complementary=*/
-             current_vertex.is_reverse_complementary});
-        vertex_distances[start_vertex][current_vertex.query_index + 1] =
-            min_insertion_distance;
-      }
+      // Process insertions in next layer.
+      const ScoreType new_insertion_distance =
+          vertex_distance + scoring_schema.insertion_penalty;
 
-      // Explore its neighbors.
-      for (const auto &neighbor :
-           sequence_graph.GetNeighbors(current_vertex.graph_vertex_id)) {
-        // Process neighbors in the same layaer.
+      PushDijkstraQueueAndUpdateDistanceIfNecessary(
+          vertex_id, vertex_j, query_index + 1, new_insertion_distance,
+          is_reverse_complementary, vertex_distances, Q, stats);
+
+      // Deal with the case when the position is not at the end of a vertex.
+      if (vertex_j < vertex_length - 1) {
         const ScoreType new_deletion_distance =
-            current_vertex.distance + scoring_schema.deletion_penalty;
+            vertex_distance + scoring_schema.deletion_penalty;
+        PushDijkstraQueueAndUpdateDistanceIfNecessary(
+            vertex_id, vertex_j + 1, query_index, new_deletion_distance,
+            is_reverse_complementary, vertex_distances, Q, stats);
 
-        // khiter_t vertex_distances_iterator =
-        //    kh_get(k32, vertex_distances[neighbor],
-        //    current_vertex.query_index);
-        // if (vertex_distances_iterator != kh_end(vertex_distances[neighbor]))
-        // {
-        //  if (new_deletion_distance <
-        //      kh_value(vertex_distances[neighbor], vertex_distances_iterator))
-        //      {
-        //    kh_value(vertex_distances[neighbor], vertex_distances_iterator) =
-        //        new_deletion_distance;
-        if (vertex_distances[neighbor].find(current_vertex.query_index) !=
-            vertex_distances[neighbor].end()) {
-          if (new_deletion_distance <
-              vertex_distances[neighbor][current_vertex.query_index]) {
-            vertex_distances[neighbor][current_vertex.query_index] =
-                new_deletion_distance;
-
-            Q.push({/*graph_vertex_id=*/neighbor,
-                    /*query_index=*/current_vertex.query_index,
-                    /*distance=*/new_deletion_distance,
-                    /*is_reverse_complementary=*/
-                    current_vertex.is_reverse_complementary});
-            // vertex_parent[neighbor][current_vertex.query_index] =
-            //    VertexWithDistanceForDijkstra<GraphSizeType, QueryLengthType,
-            //                                  ScoreType>{
-            //        /*graph_vertex_id=*/current_vertex.graph_vertex_id,
-            //        /*query_index=*/current_vertex.query_index,
-            //        /*distance=*/current_vertex.distance};
-            // std::cerr << "PUSH: " << neighbor << " "
-            //          << current_vertex.query_index << " "
-            //          << new_deletion_distance << std::endl;
-            if (current_vertex.is_reverse_complementary) {
-              ++(stats.rc_num_cells);
-            } else {
-              ++(stats.forward_num_cells);
-            }
-          }
-        } else {
-          // int khash_return_code = 0;
-          // khiter_t vertex_distances_iterator =
-          //    kh_put(k32, vertex_distances[neighbor],
-          //           current_vertex.query_index, &khash_return_code);
-          // assert(khash_return_code != -1 && khash_return_code != 0);
-          // kh_value(vertex_distances[neighbor], vertex_distances_iterator) =
-          //    new_deletion_distance;
-
-          vertex_distances[neighbor][current_vertex.query_index] =
-              new_deletion_distance;
-          Q.push({/*graph_vertex_id=*/neighbor,
-                  /*query_index=*/current_vertex.query_index,
-                  /*distance=*/new_deletion_distance,
-                  /*is_reverse_complementary=*/
-                  current_vertex.is_reverse_complementary});
-          // vertex_parent[neighbor][current_vertex.query_index] =
-          //    VertexWithDistanceForDijkstra<GraphSizeType, QueryLengthType,
-          //                                  ScoreType>{
-          //        /*graph_vertex_id=*/current_vertex.graph_vertex_id,
-          //        /*query_index=*/current_vertex.query_index,
-          //        /*distance=*/current_vertex.distance};
-
-          // std::cerr << "PUSH: " << neighbor << " " <<
-          // current_vertex.query_index
-          //          << " " << new_deletion_distance << std::endl;
-          if (current_vertex.is_reverse_complementary) {
-            ++(stats.rc_num_cells);
-          } else {
-            ++(stats.forward_num_cells);
-          }
-        }
-
-        // Process neighbors in the next layaer.
-        const QueryLengthType query_index = current_vertex.query_index + 1;
-
-        ScoreType cost = 0;
-        const char vertex_label =
+        const char vertex_next_label =
             current_vertex.is_reverse_complementary
-                ? sequence_graph.GetReverseComplementaryVertexLabel(neighbor)
-                : sequence_graph.GetVertexLabel(neighbor);
+                ? sequence_graph.GetComplementaryVertexLabelInCompactedGraph(
+                      vertex_id, vertex_j + 1)
+                : sequence_graph.GetVertexLabelInCompactedGraph(vertex_id,
+                                                                vertex_j + 1);
         const char sequence_base =
             current_vertex.is_reverse_complementary
-                ? sequence_bases[sequence_length - 1 - query_index]
-                : sequence_bases[query_index];
+                ? sequence_bases[sequence_length - 1 - (query_index + 1)]
+                : sequence_bases[query_index + 1];
 
-        if (sequence_base != vertex_label) {
-          cost = scoring_schema.substitution_penalty;
-        }
+        const bool is_mismatch = (vertex_next_label != sequence_base);
 
-        const ScoreType new_match_or_mismatch_distance =
-            std::min(
-                current_vertex.distance,
-                (ScoreType)(scoring_schema.insertion_penalty * query_index)) +
-            cost;
+        // We can deal with the match immediately if we want.
+        const ScoreType new_substitution_distance =
+            vertex_distance +
+            (is_mismatch ? scoring_schema.substitution_penalty : 0);
 
-        // std::cerr << "seq base: " << sequence_bases[query_index] << " label:
-        // " << labels_[neighbor] << " cost: " << cost << " d: " <<
-        // new_match_or_mismatch_distance << std::endl;
+        PushDijkstraQueueAndUpdateDistanceIfNecessary(
+            vertex_id, vertex_j + 1, query_index + 1, new_substitution_distance,
+            is_reverse_complementary, vertex_distances, Q, stats);
 
-        // vertex_distances_iterator =
-        //    kh_get(k32, vertex_distances[neighbor], query_index);
-        // if (vertex_distances_iterator != kh_end(vertex_distances[neighbor]))
-        // {
-        //  if (new_match_or_mismatch_distance <
-        //      kh_value(vertex_distances[neighbor], vertex_distances_iterator))
-        //      {
-        //    kh_value(vertex_distances[neighbor], vertex_distances_iterator) =
-        //        new_match_or_mismatch_distance;
-
-        if (vertex_distances[neighbor].find(query_index) !=
-            vertex_distances[neighbor].end()) {
-          if (new_match_or_mismatch_distance <
-              vertex_distances[neighbor][query_index]) {
-            vertex_distances[neighbor][query_index] =
-                new_match_or_mismatch_distance;
-
-            Q.push({/*graph_vertex_id=*/neighbor,
-                    /*query_index=*/query_index,
-                    /*distance=*/new_match_or_mismatch_distance,
-                    /*is_reverse_complementary=*/
-                    current_vertex.is_reverse_complementary});
-            // vertex_parent[neighbor][query_index] =
-            //    VertexWithDistanceForDijkstra<GraphSizeType, QueryLengthType,
-            //                                  ScoreType>{
-            //        /*graph_vertex_id=*/current_vertex.graph_vertex_id,
-            //        /*query_index=*/current_vertex.query_index,
-            //        /*distance=*/current_vertex.distance};
-
-            // std::cerr << "PUSH: " << neighbor << " " << query_index << " "
-            //          << new_match_or_mismatch_distance << std::endl;
-
-            if (current_vertex.is_reverse_complementary) {
-              ++(stats.rc_num_cells);
-            } else {
-              ++(stats.forward_num_cells);
-            }
-          }
-        } else {
-          // int khash_return_code = 0;
-          // khiter_t vertex_distances_iterator = kh_put(
-          //    k32, vertex_distances[neighbor], query_index,
-          //    &khash_return_code);
-          // assert(khash_return_code != -1 && khash_return_code != 0);
-          // kh_value(vertex_distances[neighbor], vertex_distances_iterator) =
-          //    new_match_or_mismatch_distance;
-
-          vertex_distances[neighbor][query_index] =
-              new_match_or_mismatch_distance;
-
-          Q.push({/*graph_vertex_id=*/neighbor,
-                  /*query_index=*/query_index,
-                  /*distance=*/new_match_or_mismatch_distance,
-                  /*is_reverse_complementary=*/
-                  current_vertex.is_reverse_complementary});
-          // vertex_parent[neighbor][query_index] =
-          //    VertexWithDistanceForDijkstra<GraphSizeType, QueryLengthType,
-          //                                  ScoreType>{
-          //        /*graph_vertex_id=*/current_vertex.graph_vertex_id,
-          //        /*query_index=*/current_vertex.query_index,
-          //        /*distance=*/current_vertex.distance};
-
-          // std::cerr << "PUSH: " << neighbor << " " << query_index << " "
-          //          << new_match_or_mismatch_distance << std::endl;
-          if (current_vertex.is_reverse_complementary) {
-            ++(stats.rc_num_cells);
-          } else {
-            ++(stats.forward_num_cells);
-          }
-        }
-      }  // End for exploring neighbor.
-
-      // Process insertions to the next layaer.
-      const QueryLengthType query_index = current_vertex.query_index + 1;
-
-      const ScoreType new_insertion_distance =
-          current_vertex.distance + scoring_schema.insertion_penalty;
-
-      // khiter_t vertex_distances_iterator = kh_get(
-      //    k32, vertex_distances[current_vertex.graph_vertex_id], query_index);
-      // if (vertex_distances_iterator !=
-      //    kh_end(vertex_distances[current_vertex.graph_vertex_id])) {
-      //  if (new_insertion_distance <
-      //      kh_value(vertex_distances[current_vertex.graph_vertex_id],
-      //               vertex_distances_iterator)) {
-      //    kh_value(vertex_distances[current_vertex.graph_vertex_id],
-      //             vertex_distances_iterator) = new_insertion_distance;
-
-      if (vertex_distances[current_vertex.graph_vertex_id].find(query_index) !=
-          vertex_distances[current_vertex.graph_vertex_id].end()) {
-        if (new_insertion_distance <
-            vertex_distances[current_vertex.graph_vertex_id][query_index]) {
-          vertex_distances[current_vertex.graph_vertex_id][query_index] =
-              new_insertion_distance;
-
-          Q.push({/*graph_vertex_id=*/current_vertex.graph_vertex_id,
-                  /*query_index=*/query_index,
-                  /*distance=*/new_insertion_distance,
-                  /*is_reverse_complementary=*/
-                  current_vertex.is_reverse_complementary});
-          // vertex_parent[current_vertex.graph_vertex_id][query_index] =
-          //    VertexWithDistanceForDijkstra<GraphSizeType, QueryLengthType,
-          //                                  ScoreType>{
-          //        /*graph_vertex_id=*/current_vertex.graph_vertex_id,
-          //        /*query_index=*/current_vertex.query_index,
-          //        /*distance=*/current_vertex.distance};
-
-          // std::cerr << "PUSH: " << current_vertex.graph_vertex_id << " "
-          //          << query_index << " " << new_insertion_distance
-          //          << std::endl;
-          if (current_vertex.is_reverse_complementary) {
-            ++(stats.rc_num_cells);
-          } else {
-            ++(stats.forward_num_cells);
-          }
-        }
-      } else {
-        // int khash_return_code = 0;
-        // khiter_t vertex_distances_iterator =
-        //    kh_put(k32, vertex_distances[current_vertex.graph_vertex_id],
-        //           query_index, &khash_return_code);
-        // assert(khash_return_code != -1 && khash_return_code != 0);
-        // kh_value(vertex_distances[current_vertex.graph_vertex_id],
-        //         vertex_distances_iterator) = new_insertion_distance;
-
-        vertex_distances[current_vertex.graph_vertex_id][query_index] =
-            new_insertion_distance;
-
-        Q.push({/*graph_vertex_id=*/current_vertex.graph_vertex_id,
-                /*query_index=*/query_index,
-                /*distance=*/new_insertion_distance,
-                /*is_reverse_complementary=*/
-                current_vertex.is_reverse_complementary});
-        // vertex_parent[current_vertex.graph_vertex_id][query_index] =
-        //    VertexWithDistanceForDijkstra<GraphSizeType, QueryLengthType,
-        //                                  ScoreType>{
-        //        /*graph_vertex_id=*/current_vertex.graph_vertex_id,
-        //        /*query_index=*/current_vertex.query_index,
-        //        /*distance=*/current_vertex.distance};
-
-        // std::cerr << "PUSH: " << current_vertex.graph_vertex_id << " "
-        //          << query_index << " " << new_insertion_distance <<
-        //          std::endl;
-        if (current_vertex.is_reverse_complementary) {
-          ++(stats.rc_num_cells);
-        } else {
-          ++(stats.forward_num_cells);
-        }
+        continue;
       }
-    }
 
-    // for (GraphSizeType vi = 0; vi < num_vertices; ++vi) {
-    //  kh_destroy(k32, forward_vertex_distances[vi]);
-    //  kh_destroy(k32, complementary_vertex_distances[vi]);
-    //}
+      // This is the last char in the vertex, we have to add its neighbors to
+      // the queue.
+      if (vertex_id == 0) {
+        const GraphSizeType start_neighbor =
+            start_vertex == num_vertices ? 1 : start_vertex;
+        const GraphSizeType end_neighbor =
+            start_vertex == num_vertices ? num_vertices : start_vertex + 1;
+        for (GraphSizeType neighbor = start_neighbor; neighbor < end_neighbor;
+             ++neighbor) {
+          ProcessNeighbors(neighbor, current_vertex, sequence_index,
+                           sequence_batch, start_vertex, sequence_graph,
+                           scoring_schema, vertex_distances, Q, stats);
+        }
+        continue;
+      }
 
-    // std::cerr << "Sequence length: " << sequence_length
-    //          << ", forward alignment cost:" << forward_alignment_cost
-    //          << ", reverse complement alignment cost:"
-    //          << reverse_complement_alignment_cost
-    //          << ", alignment cost:" << min_alignment_cost << std::endl;
+      for (const auto &neighbor :
+           sequence_graph.GetNeighborsInCompatedGraph(vertex_id)) {
+        ProcessNeighbors(neighbor, current_vertex, sequence_index,
+                         sequence_batch, start_vertex, sequence_graph,
+                         scoring_schema, vertex_distances, Q, stats);
+      }
+    }  // End while.
+
     return min_alignment_cost;
   }
 };
